@@ -63,8 +63,9 @@ class SheetsManager(private val context: Context) {
                 val body = ValueRange().setValues(values)
 
                 sheetsService.spreadsheets().values()
-                    .update(spreadsheetId, "Sheet1!A1", body)
+                    .append(spreadsheetId, "Sheet1!A1", body)
                     .setValueInputOption("RAW")
+                    .setInsertDataOption("INSERT_ROWS")
                     .execute()
 
             } catch (e: Exception) {

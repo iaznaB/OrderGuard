@@ -31,12 +31,11 @@ import java.util.*
 import java.util.regex.Pattern
 
 class OrderMonitorService : AccessibilityService() {
-
     private var lastActionTime: Long = 0
     private var pendingPrice: Double = 0.0
     private var pendingMiles: Double = 0.0
+
     private var uberDeclineRect: Rect? = null
-    
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     private lateinit var sheetsManager: SheetsManager
@@ -78,16 +77,19 @@ class OrderMonitorService : AccessibilityService() {
         historyPrefs.edit().putStringSet(key, trimmedLogs).apply()
 
         // Sync to Google Sheets
-        serviceScope.launch {
-            sheetsManager.logOrderToSheet(
-                date = dateKey,
-                time = time,
-                appName = getAppName(packageName),
-                price = price,
-                miles = miles,
-                status = action.uppercase()
-            )
+        if (::sheetsManager.isInitialized) {
+            serviceScope.launch {
+                sheetsManager.logOrderToSheet(
+                    date = dateKey,
+                    time = time,
+                    appName = getAppName(packageName),
+                    price = price,
+                    miles = miles,
+                    status = action.uppercase()
+                )
+            }
         }
+
     }
 
     private fun showVisualClick(x: Float, y: Float) {
@@ -125,7 +127,10 @@ class OrderMonitorService : AccessibilityService() {
         super.onServiceConnected()
         sheetsManager = SheetsManager(this)
         val info = AccessibilityServiceInfo()
-        info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+        info.eventTypes =
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                    AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                    AccessibilityEvent.TYPE_VIEW_CLICKED
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
         info.notificationTimeout = 50
         info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
@@ -138,6 +143,12 @@ class OrderMonitorService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: ""
+
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            return
+        }
 
         // MANDATORY: Check monitoring state
         val filterPrefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
@@ -152,10 +163,7 @@ class OrderMonitorService : AccessibilityService() {
 
         val data = mutableMapOf<String, Double>()
         if (packageName == "com.ubercab.driver") {
-            uberDeclineRect = null
             findValuesUber(rootNode, data)
-        } else {
-            findValuesGeneral(rootNode, data)
         }
 
         val price = data["price"] ?: 0.0
@@ -198,32 +206,45 @@ class OrderMonitorService : AccessibilityService() {
 
     private fun findValuesUber(node: AccessibilityNodeInfo?, data: MutableMap<String, Double>) {
         if (node == null) return
+
         val text = node.text?.toString() ?: ""
         val desc = node.contentDescription?.toString() ?: ""
         val combined = "$text $desc"
 
         if (combined.contains("$")) {
-            val m = Pattern.compile("\\\$(\\d+\\\\.?\\d*)").matcher(combined)
+            val m = Pattern.compile("\\$(\\d+\\.?\\d*)").matcher(combined)
             if (m.find()) {
                 val p = m.group(1)?.toDoubleOrNull() ?: 0.0
                 if (p > (data["price"] ?: 0.0)) data["price"] = p
             }
         }
 
-        val milesMatcher = Pattern.compile("\\((\\d+\\\\.?\\d*)\\s*mi\\)").matcher(combined)
+        val milesMatcher = Pattern.compile("\\((\\d+\\.?\\d*)\\s*mi\\)").matcher(combined)
         if (milesMatcher.find()) {
             data["miles"] = milesMatcher.group(1)?.toDoubleOrNull() ?: 0.0
         }
 
+        // ⭐ NODE SHAPE DETECTION (OPTION 3 FROM PDF)
         if (node.className == "android.widget.Button" && node.text == null) {
+
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            if (rect.width() in 70..220 && rect.left > 500) {
+
+            val width = rect.width()
+            val height = rect.height()
+
+            // Uber X button ~135x135
+            if (width in 100..150 && height in 100..150) {
+
+                Log.d("OrderGuard", "Found Uber X button via shape detection: $rect")
+
                 uberDeclineRect = rect
             }
         }
 
-        for (i in 0 until node.childCount) findValuesUber(node.getChild(i), data)
+        for (i in 0 until node.childCount) {
+            findValuesUber(node.getChild(i), data)
+        }
     }
 
     private fun findValuesGeneral(node: AccessibilityNodeInfo?, data: MutableMap<String, Double>) {
@@ -242,22 +263,52 @@ class OrderMonitorService : AccessibilityService() {
         for (i in 0 until node.childCount) findValuesGeneral(node.getChild(i), data)
     }
 
+
+
     private fun executeDeclineSequence(rootNode: AccessibilityNodeInfo, packageName: String) {
+
+
         if (packageName == "com.ubercab.driver") {
-            Handler(Looper.getMainLooper()).postDelayed({
-                uberDeclineRect?.let {
-                    showVisualClick(it.centerX().toFloat(), it.centerY().toFloat())
-                    clickAt(it.centerX().toFloat(), it.centerY().toFloat())
-                }
-            }, 300)
-        } else if (packageName == "com.doordash.driverapp") {
-            Log.d("OrderGuard", "Attempting DoorDash decline in 1000ms...")
-            Handler(Looper.getMainLooper()).postDelayed({
-                val currentRoot = rootInActiveWindow ?: rootNode
-                attemptDecline(currentRoot, 0)
-            }, 1000)
+            executeUberDecline()
+            return
+        }
+
+        else if (packageName == "com.doordash.driverapp") {
+            attemptDecline(rootNode, 0)
         }
     }
+
+    private fun executeUberDecline() {
+
+        val target = uberDeclineRect
+
+        if (target != null) {
+
+            val x = target.centerX().toFloat()
+            val y = target.centerY().toFloat()
+
+            Log.d("OrderGuard", "Clicking Uber X at: $x , $y")
+
+            clickAt(x, y)
+
+            uberDeclineRect = null
+        }
+    }
+
+    private fun clickAt(x: Float, y: Float) {
+
+        val path = Path()
+        path.moveTo(x, y)
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
+            .build()
+
+        dispatchGesture(gesture, null, null)
+
+        showVisualClick(x, y)
+    }
+
 
     private fun attemptDecline(root: AccessibilityNodeInfo, retryCount: Int) {
         // Step 1: Target the initial Decline button from Screenshot 1
@@ -370,10 +421,42 @@ class OrderMonitorService : AccessibilityService() {
         }
     }
 
-    private fun clickAt(x: Float, y: Float) {
-        val path = Path().apply { moveTo(x, y) }
-        dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 1, 50)).build(), null, null)
+    private fun handleReasonPopup() {
+        Handler(Looper.getMainLooper()).postDelayed({
+
+            val root = rootInActiveWindow ?: return@postDelayed
+
+            val reasons = listOf(
+                "order is too small",
+                "distance is too far",
+                "something else",
+                "too small",
+                "distance"
+            )
+
+            for (reason in reasons) {
+                val nodes = root.findAccessibilityNodeInfosByText(reason)
+                if (nodes.isNotEmpty()) {
+                    if (tryClick(nodes[0])) {
+                        Log.d("OrderGuard", "Clicked decline reason: $reason")
+                        break
+                    }
+                }
+            }
+
+            Handler(Looper.getMainLooper()).postDelayed({
+                val submitRoot = rootInActiveWindow ?: return@postDelayed
+                if (findAndClickByText(submitRoot, "Submit")) {
+                    Log.d("OrderGuard", "Clicked Submit after decline reason")
+                }
+            }, 500)
+
+        }, 700)
     }
+
+
+
+
 
     private fun tryClick(node: AccessibilityNodeInfo?): Boolean {
         var current = node
@@ -398,6 +481,8 @@ class OrderMonitorService : AccessibilityService() {
         }
         return false
     }
+
+
 
     private fun updateStats(packageName: String, type: String) {
         val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
