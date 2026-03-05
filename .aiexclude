@@ -1,0 +1,19 @@
+# --- PRIVACY & SECRETS ---
+# This prevents Gemini from seeing your local API keys or passwords
+local.properties
+secrets.xml
+google-services.json
+*.keystore
+*.jks
+
+# --- PROJECT OVERHEAD ---
+# Exclude these so Gemini doesn't get "distracted" by machine-generated files
+.gradle/
+.idea/
+build/
+capture/
+*.iml
+
+# --- VERSION CONTROL ---
+.git/
+.gitignore

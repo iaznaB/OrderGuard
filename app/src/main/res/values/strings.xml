@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">OrderMonitorService</string>
+    <string name="accessibility_description">Monitors DoorDash, Uber and GrubHub orders to filter low-paying offers automatically.</string>
+</resources>
