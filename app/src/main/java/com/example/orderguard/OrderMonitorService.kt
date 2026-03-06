@@ -31,11 +31,16 @@ import java.util.*
 import java.util.regex.Pattern
 
 class OrderMonitorService : AccessibilityService() {
+
+
     private var lastActionTime: Long = 0
     private var pendingPrice: Double = 0.0
     private var pendingMiles: Double = 0.0
 
-    private var uberDeclineRect: Rect? = null
+    private val uberDriver = UberDriver()
+    private val doorDashDriver = DoorDashDriver()
+
+    private val grubhubDriver = GrubhubDriver
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     private lateinit var sheetsManager: SheetsManager
@@ -130,7 +135,8 @@ class OrderMonitorService : AccessibilityService() {
         info.eventTypes =
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
                     AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                    AccessibilityEvent.TYPE_VIEW_CLICKED
+                    AccessibilityEvent.TYPE_VIEW_CLICKED or
+                    AccessibilityEvent.TYPE_VIEW_SCROLLED
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
         info.notificationTimeout = 50
         info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
@@ -146,7 +152,8 @@ class OrderMonitorService : AccessibilityService() {
 
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
             event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            event.eventType != AccessibilityEvent.TYPE_VIEW_CLICKED &&
+            event.eventType != AccessibilityEvent.TYPE_VIEW_SCROLLED) {
             return
         }
 
@@ -159,11 +166,59 @@ class OrderMonitorService : AccessibilityService() {
         }
 
         if (!deliveryApps.contains(packageName)) return
+
+        // DoorDash reacts immediately when the offer view appears
+        if (packageName == "com.doordash.driverapp" &&
+            event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
+
+            val root = rootInActiveWindow ?: return
+
+            val data = mutableMapOf<String, Double>()
+            doorDashDriver.findValues(root, data)
+
+            val price = data["price"] ?: 0.0
+            val miles = data["miles"] ?: 0.0
+
+            if (price > 0.0 && miles > 0.0) {
+                if (price != pendingPrice || miles != pendingMiles) {
+
+                    pendingPrice = price
+                    pendingMiles = miles
+
+                    val filterPrefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
+
+                    val minRatio = filterPrefs.getFloat("MIN_RATIO", 2.0f).toDouble()
+                    val minPay = filterPrefs.getFloat("MIN_PAY", 5.0f).toDouble()
+
+                    if ((price / miles) < minRatio || price < minPay) {
+
+                        val currentTime = System.currentTimeMillis()
+
+                        if (currentTime - lastActionTime > 2000) {
+                            lastActionTime = currentTime
+                            executeDeclineSequence(root, packageName)
+                        }
+                    }
+                }
+            }
+
+            return
+        }
+
         val rootNode = rootInActiveWindow ?: return
 
         val data = mutableMapOf<String, Double>()
-        if (packageName == "com.ubercab.driver") {
-            findValuesUber(rootNode, data)
+        when (packageName) {
+
+            "com.ubercab.driver" ->
+                uberDriver.findValues(rootNode, data)
+
+            "com.doordash.driverapp" ->
+                doorDashDriver.findValues(rootNode, data)
+
+            "com.grubhub.driver" ->
+                grubhubDriver.findValues(rootNode, data)
+
         }
 
         val price = data["price"] ?: 0.0
@@ -204,98 +259,27 @@ class OrderMonitorService : AccessibilityService() {
         }
     }
 
-    private fun findValuesUber(node: AccessibilityNodeInfo?, data: MutableMap<String, Double>) {
-        if (node == null) return
+    private fun executeDeclineSequence(
+        rootNode: AccessibilityNodeInfo,
+        packageName: String
+    ) {
 
-        val text = node.text?.toString() ?: ""
-        val desc = node.contentDescription?.toString() ?: ""
-        val combined = "$text $desc"
+        when (packageName) {
 
-        if (combined.contains("$")) {
-            val m = Pattern.compile("\\$(\\d+\\.?\\d*)").matcher(combined)
-            if (m.find()) {
-                val p = m.group(1)?.toDoubleOrNull() ?: 0.0
-                if (p > (data["price"] ?: 0.0)) data["price"] = p
-            }
-        }
+            "com.ubercab.driver" ->
+                uberDriver.executeDecline(this, rootNode)
 
-        val milesMatcher = Pattern.compile("\\((\\d+\\.?\\d*)\\s*mi\\)").matcher(combined)
-        if (milesMatcher.find()) {
-            data["miles"] = milesMatcher.group(1)?.toDoubleOrNull() ?: 0.0
-        }
+            "com.doordash.driverapp" ->
+                doorDashDriver.executeDecline(this, rootNode)
 
-        // ⭐ NODE SHAPE DETECTION (OPTION 3 FROM PDF)
-        if (node.className == "android.widget.Button" && node.text == null) {
-
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-
-            val width = rect.width()
-            val height = rect.height()
-
-            // Uber X button ~135x135
-            if (width in 100..150 && height in 100..150) {
-
-                Log.d("OrderGuard", "Found Uber X button via shape detection: $rect")
-
-                uberDeclineRect = rect
-            }
-        }
-
-        for (i in 0 until node.childCount) {
-            findValuesUber(node.getChild(i), data)
+            "com.grubhub.driver" ->
+                grubhubDriver.executeDecline(this, rootNode)
         }
     }
 
-    private fun findValuesGeneral(node: AccessibilityNodeInfo?, data: MutableMap<String, Double>) {
-        if (node == null) return
-        val text = node.text?.toString() ?: ""
-        val desc = node.contentDescription?.toString() ?: ""
-        val combined = "$text $desc"
-
-        if (combined.isNotEmpty()) {
-            val priceMatcher = Pattern.compile("\\\$(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{2})?)").matcher(combined)
-            if (priceMatcher.find()) data["price"] = priceMatcher.group(1)?.replace(",", "")?.toDoubleOrNull() ?: 0.0
-
-            val milesMatcher = Pattern.compile("(\\d+\\\\.?\\d*)\\s*(mi|miles)", Pattern.CASE_INSENSITIVE).matcher(combined)
-            if (milesMatcher.find()) data["miles"] = milesMatcher.group(1)?.toDoubleOrNull() ?: 0.0
-        }
-        for (i in 0 until node.childCount) findValuesGeneral(node.getChild(i), data)
-    }
 
 
-
-    private fun executeDeclineSequence(rootNode: AccessibilityNodeInfo, packageName: String) {
-
-
-        if (packageName == "com.ubercab.driver") {
-            executeUberDecline()
-            return
-        }
-
-        else if (packageName == "com.doordash.driverapp") {
-            attemptDecline(rootNode, 0)
-        }
-    }
-
-    private fun executeUberDecline() {
-
-        val target = uberDeclineRect
-
-        if (target != null) {
-
-            val x = target.centerX().toFloat()
-            val y = target.centerY().toFloat()
-
-            Log.d("OrderGuard", "Clicking Uber X at: $x , $y")
-
-            clickAt(x, y)
-
-            uberDeclineRect = null
-        }
-    }
-
-    private fun clickAt(x: Float, y: Float) {
+    fun clickAt(x: Float, y: Float) {
 
         val path = Path()
         path.moveTo(x, y)
@@ -310,155 +294,8 @@ class OrderMonitorService : AccessibilityService() {
     }
 
 
-    private fun attemptDecline(root: AccessibilityNodeInfo, retryCount: Int) {
-        // Step 1: Target the initial Decline button from Screenshot 1
-        val ddIds = listOf(
-            "com.doordash.driverapp:id/decline_button", 
-            "com.doordash.driverapp:id/view_decline"
-        )
-        
-        var clicked = false
-        for (id in ddIds) {
-            val nodes = root.findAccessibilityNodeInfosByViewId(id)
-            if (nodes.isNotEmpty()) {
-                Log.d("OrderGuard", "Found Decline button by ID: $id")
-                if (tryClick(nodes[0])) {
-                    clicked = true
-                    break
-                }
-            }
-        }
 
-        if (!clicked) {
-            val declineTerms = listOf("Decline", "Reject", "No thanks")
-            for (term in declineTerms) {
-                if (findAndClickByText(root, term)) {
-                    Log.d("OrderGuard", "Clicked Decline via Text: $term")
-                    clicked = true
-                    break
-                }
-            }
-        }
-
-        if (clicked) {
-            handleDoordashMultiStepDecline()
-        } else if (retryCount < 3) {
-            Log.d("OrderGuard", "Decline button not found, retrying... ($retryCount)")
-            Handler(Looper.getMainLooper()).postDelayed({
-                val newRoot = rootInActiveWindow ?: root
-                attemptDecline(newRoot, retryCount + 1)
-            }, 500)
-        } else {
-            Log.d("OrderGuard", "Failed to find DoorDash decline button after retries.")
-        }
-    }
-
-    private fun handleDoordashMultiStepDecline() {
-        Handler(Looper.getMainLooper()).postDelayed({
-            val postRoot = rootInActiveWindow ?: return@postDelayed
-
-            // Step 2: Target the red "Decline offer" button from Screenshot 2
-            val redButtonIds = listOf(
-                "com.doordash.driverapp:id/view_decline_button"
-            )
-            
-            var redButtonClicked = false
-            for (id in redButtonIds) {
-                val nodes = postRoot.findAccessibilityNodeInfosByViewId(id)
-                if (nodes.isNotEmpty()) {
-                    Log.d("OrderGuard", "Found red button by ID: $id. Clicking...")
-                    if (tryClick(nodes[0])) {
-                        redButtonClicked = true
-                        break
-                    }
-                }
-            }
-
-            if (!redButtonClicked) {
-                val possibleTexts = listOf("Decline offer", "Decline Offer")
-                for (text in possibleTexts) {
-                    val nodes = postRoot.findAccessibilityNodeInfosByText(text)
-                    if (nodes.isNotEmpty()) {
-                        Log.d("OrderGuard", "Found red button with text '$text'. Clicking...")
-                        if (tryClick(nodes[0])) {
-                            redButtonClicked = true
-                            break
-                        }
-                    }
-                }
-            }
-
-            if (redButtonClicked) {
-                Log.d("OrderGuard", "Red button clicked successfully.")
-            } else {
-                Log.d("OrderGuard", "Red button not found via ID or text. Fallback to reasons...")
-                clickReasonAndSubmit(postRoot)
-            }
-        }, 1200)
-    }
-
-    private fun clickReasonAndSubmit(root: AccessibilityNodeInfo) {
-        val reasons = listOf("Order is too small", "Distance is too far", "Something else", "too small", "Distance")
-        var reasonClicked = false
-        for (reason in reasons) {
-            val nodes = root.findAccessibilityNodeInfosByText(reason)
-            if (nodes.isNotEmpty()) {
-                if (tryClick(nodes[0])) {
-                    Log.d("OrderGuard", "Clicked decline reason: $reason")
-                    reasonClicked = true
-                    break
-                }
-            }
-        }
-
-        if (reasonClicked) {
-            Handler(Looper.getMainLooper()).postDelayed({
-                val submitRoot = rootInActiveWindow ?: return@postDelayed
-                if (findAndClickByText(submitRoot, "Submit")) {
-                    Log.d("OrderGuard", "Clicked final Submit button.")
-                }
-            }, 600)
-        }
-    }
-
-    private fun handleReasonPopup() {
-        Handler(Looper.getMainLooper()).postDelayed({
-
-            val root = rootInActiveWindow ?: return@postDelayed
-
-            val reasons = listOf(
-                "order is too small",
-                "distance is too far",
-                "something else",
-                "too small",
-                "distance"
-            )
-
-            for (reason in reasons) {
-                val nodes = root.findAccessibilityNodeInfosByText(reason)
-                if (nodes.isNotEmpty()) {
-                    if (tryClick(nodes[0])) {
-                        Log.d("OrderGuard", "Clicked decline reason: $reason")
-                        break
-                    }
-                }
-            }
-
-            Handler(Looper.getMainLooper()).postDelayed({
-                val submitRoot = rootInActiveWindow ?: return@postDelayed
-                if (findAndClickByText(submitRoot, "Submit")) {
-                    Log.d("OrderGuard", "Clicked Submit after decline reason")
-                }
-            }, 500)
-
-        }, 700)
-    }
-
-
-
-
-
-    private fun tryClick(node: AccessibilityNodeInfo?): Boolean {
+   fun tryClick(node: AccessibilityNodeInfo?): Boolean {
         var current = node
         while (current != null) {
             if (current.isClickable) {
@@ -472,7 +309,7 @@ class OrderMonitorService : AccessibilityService() {
         return false
     }
 
-    private fun findAndClickByText(rootNode: AccessibilityNodeInfo, text: String): Boolean {
+    fun findAndClickByText(rootNode: AccessibilityNodeInfo, text: String): Boolean {
         val nodes = rootNode.findAccessibilityNodeInfosByText(text)
         for (node in nodes) {
             if (tryClick(node)) {

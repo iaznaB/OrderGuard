@@ -107,16 +107,74 @@ class SheetsManager(private val context: Context) {
                     .setApplicationName("OrderGuard")
                     .build()
 
-                val values = listOf(
-                    listOf(date, time, appName, price, miles, status)
-                )
+                // If final status, remove DETECTED row with same date/time/app
+                if (status.uppercase() != "DETECTED") {
 
-                val body = ValueRange().setValues(values)
+                    val existing = sheetsService.spreadsheets().values()
+                        .get(spreadsheetId, "Sheet1!A2:F")
+                        .execute()
 
-                sheetsService.spreadsheets().values()
-                    .append(spreadsheetId, "Sheet1!A1", body)
-                    .setValueInputOption("RAW")
-                    .execute()
+                    val rows = existing.getValues() ?: emptyList()
+
+                    val requests = mutableListOf<Request>()
+
+                    for (i in rows.indices) {
+                        val row = rows[i]
+                        if (row.size < 6) continue
+
+                        val rDate = row[0].toString()
+                        val rTime = row[1].toString()
+                        val rApp = row[2].toString()
+                        val rStatus = row[5].toString()
+
+                        if (
+                            rDate == date &&
+                            rTime == time &&
+                            rApp == appName &&
+                            rStatus.equals("DETECTED", true)
+                        ) {
+
+                            val deleteRequest = Request().setDeleteDimension(
+                                DeleteDimensionRequest()
+                                    .setRange(
+                                        DimensionRange()
+                                            .setSheetId(0)
+                                            .setDimension("ROWS")
+                                            .setStartIndex(i + 1)
+                                            .setEndIndex(i + 2)
+                                    )
+                            )
+
+                            requests.add(deleteRequest)
+                        }
+                    }
+
+                    if (requests.isNotEmpty()) {
+                        val batch = BatchUpdateSpreadsheetRequest().setRequests(requests)
+
+                        sheetsService.spreadsheets()
+                            .batchUpdate(spreadsheetId, batch)
+                            .execute()
+                    }
+                    val values = listOf(
+                        listOf(
+                            date,
+                            time,
+                            appName,
+                            price.toString(),
+                            miles.toString(),
+                            status
+                        )
+                    )
+
+                    val body = ValueRange().setValues(values)
+
+                    sheetsService.spreadsheets().values()
+                        .append(spreadsheetId, "Sheet1!A:F", body)
+                        .setValueInputOption("RAW")
+                        .setInsertDataOption("INSERT_ROWS")
+                        .execute()
+                }
 
             } catch (e: Exception) {
                 Log.e("SheetsManager", "Error logging order: ${e.message}")
