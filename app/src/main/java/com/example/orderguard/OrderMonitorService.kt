@@ -32,10 +32,16 @@ import java.util.regex.Pattern
 
 class OrderMonitorService : AccessibilityService() {
 
-
+    private val deliveryApps = setOf(
+        "com.doordash.driverapp",
+        "com.ubercab.driver",
+        "com.grubhub.driver"
+    )
     private var lastActionTime: Long = 0
     private var pendingPrice: Double = 0.0
     private var pendingMiles: Double = 0.0
+
+    private var lastNonDeliveryApp: String? = null
 
     private val uberDriver = UberDriver()
     private val doorDashDriver = DoorDashDriver()
@@ -45,13 +51,7 @@ class OrderMonitorService : AccessibilityService() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     private lateinit var sheetsManager: SheetsManager
 
-    private val deliveryApps = setOf(
-        "com.doordash.driverapp",
-        "com.ubercab.driver",
-        "com.grubhub.driver"
-    )
-
-    private fun getAppName(packageName: String): String {
+       private fun getAppName(packageName: String): String {
         return when (packageName) {
             "com.doordash.driverapp" -> "DoorDash"
             "com.ubercab.driver" -> "Uber"
@@ -165,7 +165,23 @@ class OrderMonitorService : AccessibilityService() {
             return // This logic is now handled by OrderNotificationListener.
         }
 
-        if (!deliveryApps.contains(packageName)) return
+        // Remember last real user app (ignore system apps and duplicates)
+
+        val appInfo = try {
+            packageManager.getApplicationInfo(packageName, 0)
+        } catch (e: Exception) {
+            null
+        }
+
+        val isSystemApp = appInfo?.flags?.and(android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+
+        if (!deliveryApps.contains(packageName) &&
+            !isSystemApp &&
+            packageName != lastNonDeliveryApp) {
+
+            lastNonDeliveryApp = packageName
+            Log.d("OrderGuard", "Last non-delivery app set to: $lastNonDeliveryApp")
+        }
 
         // DoorDash reacts immediately when the offer view appears
         if (packageName == "com.doordash.driverapp" &&
@@ -351,4 +367,87 @@ class OrderMonitorService : AccessibilityService() {
     }
 
     override fun onInterrupt() {}
+
+    private fun switchBackToPreviousApp() {
+
+        val root = rootInActiveWindow ?: return
+        val currentPackage = root.packageName?.toString() ?: return
+
+        if (!deliveryApps.contains(currentPackage)) return
+
+        // Open recents
+        performGlobalAction(GLOBAL_ACTION_RECENTS)
+
+        Handler(Looper.getMainLooper()).postDelayed({
+
+            val recentsRoot = rootInActiveWindow ?: return@postDelayed
+
+            fun findApp(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+
+                if (node == null) return null
+
+                val pkg = node.packageName?.toString()
+
+                if (pkg != null && !deliveryApps.contains(pkg)) {
+                    if (node.isClickable) return node
+                }
+
+                for (i in 0 until node.childCount) {
+                    val result = findApp(node.getChild(i))
+                    if (result != null) return result
+                }
+
+                return null
+            }
+
+            val target = findApp(recentsRoot)
+
+            target?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+
+        }, 400)
+    }
+
+    fun scheduleReturnToPreviousApp(delay: Long) {
+        Handler(Looper.getMainLooper()).postDelayed({
+            returnToPreviousAppSmart()
+        }, delay)
+    }
+
+    private fun returnToPreviousAppSmart() {
+
+        val targetPackage = lastNonDeliveryApp ?: return
+
+        try {
+
+            val intent = packageManager.getLaunchIntentForPackage(targetPackage)
+
+            if (intent != null) {
+
+                intent.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                )
+
+                startActivity(intent)
+
+                Log.d("OrderGuard", "Returned to $targetPackage")
+
+            } else {
+
+                Log.e("OrderGuard", "Launch intent not found for $targetPackage")
+            }
+
+        } catch (e: Exception) {
+
+            Log.e("OrderGuard", "Failed returning to app: ${e.message}")
+
+            // Fallback to carousel if intent fails
+            performGlobalAction(GLOBAL_ACTION_RECENTS)
+
+            Handler(Looper.getMainLooper()).postDelayed({
+                performGlobalAction(GLOBAL_ACTION_RECENTS)
+            }, 250)
+        }
+    }
 }

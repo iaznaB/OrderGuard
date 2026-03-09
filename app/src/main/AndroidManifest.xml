@@ -11,6 +11,11 @@
         <package android:name="com.doordash.driverapp" />
         <package android:name="com.ubercab.driver" />
         <package android:name="com.grubhub.driver" />
+            <intent>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent>
+
     </queries>
 
     <application

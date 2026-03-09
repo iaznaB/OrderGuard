@@ -99,6 +99,8 @@ class DoorDashDriver : AppDriver {
 
                                     Log.d("OrderGuard", "DoorDash confirmed decline")
 
+                                    service.scheduleReturnToPreviousApp(500)
+
                                     return@postDelayed
                                 }
                             }

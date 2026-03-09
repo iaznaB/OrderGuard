@@ -85,6 +85,9 @@ class UberDriver : AppDriver {
 
         service.clickAt(x, y)
 
+
+        service.scheduleReturnToPreviousApp(500)
+
         uberDeclineRect = null
     }
 }

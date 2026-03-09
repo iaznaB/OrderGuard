@@ -54,6 +54,8 @@ object GrubhubDriver {
                     rejectButton.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 }
 
+                (service as OrderMonitorService).scheduleReturnToPreviousApp(500)
+
                 Log.d(TAG, "Grubhub Reject clicked")
 
             } else {
