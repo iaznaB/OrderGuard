@@ -108,6 +108,8 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun MainContent(authManager: AuthManager, sheetsManager: SheetsManager) {
+
+
         val context = LocalContext.current
         val filterPrefs = remember { context.getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE) }
         val statsPrefs = remember { context.getSharedPreferences("OrderStats", MODE_PRIVATE) }
@@ -240,7 +242,21 @@ class MainActivity : ComponentActivity() {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
                 Text("System Permissions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+
                 Spacer(modifier = Modifier.height(8.dp))
+
+                Button(
+                    onClick = {
+                        val intent = Intent(context, AppPickerActivity::class.java)
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Choose Apps To Return To")
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
 
                 Button(
                     onClick = {

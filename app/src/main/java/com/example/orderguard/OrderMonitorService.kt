@@ -32,6 +32,11 @@ import java.util.regex.Pattern
 
 class OrderMonitorService : AccessibilityService() {
 
+    private fun refreshAllowedApps() {
+        val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
+        allowedReturnApps =
+            prefs.getStringSet("ALLOWED_RETURN_APPS", emptySet()) ?: emptySet()
+    }
     private val deliveryApps = setOf(
         "com.doordash.driverapp",
         "com.ubercab.driver",
@@ -42,6 +47,8 @@ class OrderMonitorService : AccessibilityService() {
     private var pendingMiles: Double = 0.0
 
     private var lastNonDeliveryApp: String? = null
+
+    private var allowedReturnApps: Set<String> = emptySet()
 
     private val uberDriver = UberDriver()
     private val doorDashDriver = DoorDashDriver()
@@ -144,6 +151,10 @@ class OrderMonitorService : AccessibilityService() {
                 AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
 
         this.serviceInfo = info
+        val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
+
+        allowedReturnApps =
+            prefs.getStringSet("ALLOWED_RETURN_APPS", emptySet()) ?: emptySet()
         Log.d("OrderGuardDebug", "Accessibility Service Connected")
     }
 
@@ -165,22 +176,11 @@ class OrderMonitorService : AccessibilityService() {
             return // This logic is now handled by OrderNotificationListener.
         }
 
-        // Remember last real user app (ignore system apps and duplicates)
-
-        val appInfo = try {
-            packageManager.getApplicationInfo(packageName, 0)
-        } catch (e: Exception) {
-            null
-        }
-
-        val isSystemApp = appInfo?.flags?.and(android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-
-        if (!deliveryApps.contains(packageName) &&
-            !isSystemApp &&
+        if (allowedReturnApps.contains(packageName) &&
             packageName != lastNonDeliveryApp) {
 
             lastNonDeliveryApp = packageName
-            Log.d("OrderGuard", "Last non-delivery app set to: $lastNonDeliveryApp")
+            Log.d("OrderGuard", "Return app set to: $lastNonDeliveryApp")
         }
 
         // DoorDash reacts immediately when the offer view appears
@@ -291,6 +291,7 @@ class OrderMonitorService : AccessibilityService() {
             "com.grubhub.driver" ->
                 grubhubDriver.executeDecline(this, rootNode)
         }
+        scheduleReturnToPreviousApp(1200)
     }
 
 
@@ -415,7 +416,14 @@ class OrderMonitorService : AccessibilityService() {
 
     private fun returnToPreviousAppSmart() {
 
+        refreshAllowedApps()
+
         val targetPackage = lastNonDeliveryApp ?: return
+
+        if (!allowedReturnApps.contains(targetPackage)) {
+            Log.d("OrderGuard", "App not in allowed list")
+            return
+        }
 
         try {
 

@@ -36,6 +36,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".AppPickerActivity"
+            android:exported="false" />
+
         <service
             android:name=".OrderNotificationListener"
             android:label="OrderGuard Notification Monitor"
@@ -63,5 +67,6 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_TYPE"
                 android:value="This service monitors delivery app screens to provide hands-free safety filtering for gig workers." />
         </service>
+
     </application>
 </manifest>
