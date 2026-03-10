@@ -12,6 +12,10 @@ import android.util.Log
 class OrderNotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+
+        val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
+        if (!prefs.getBoolean("IS_MONITORING", false)) return
+
         val packageName = sbn.packageName
         val extras = sbn.notification.extras
         val title = extras.getString("android.title")?.lowercase() ?: ""

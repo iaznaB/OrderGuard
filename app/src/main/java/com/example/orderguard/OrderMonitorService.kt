@@ -159,6 +159,8 @@ class OrderMonitorService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
+        if (!prefs.getBoolean("IS_MONITORING", false)) return
         val packageName = event.packageName?.toString() ?: ""
 
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
