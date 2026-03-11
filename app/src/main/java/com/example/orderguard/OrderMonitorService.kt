@@ -47,6 +47,7 @@ class OrderMonitorService : AccessibilityService() {
     private var pendingMiles: Double = 0.0
 
     private var lastNonDeliveryApp: String? = null
+    private var lastForegroundApp: String? = null
 
     private var allowedReturnApps: Set<String> = emptySet()
 
@@ -159,9 +160,32 @@ class OrderMonitorService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+
         val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
-        if (!prefs.getBoolean("IS_MONITORING", false)) return
+
+        if (!prefs.getBoolean("IS_MONITORING", false)) {
+            return
+        }
         val packageName = event.packageName?.toString() ?: ""
+
+        // Track last foreground app
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+
+            if (packageName == "com.android.systemui") return
+
+            if (
+                packageName.contains("doordash") ||
+                packageName.contains("uber") ||
+                packageName.contains("grubhub")
+            ) return
+
+            lastForegroundApp = packageName
+
+            val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
+            prefs.edit().putString("LAST_FOREGROUND_APP", packageName).apply()
+
+            Log.d("OrderGuard", "Foreground app saved: $packageName")
+        }
 
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
             event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
@@ -293,7 +317,7 @@ class OrderMonitorService : AccessibilityService() {
             "com.grubhub.driver" ->
                 grubhubDriver.executeDecline(this, rootNode)
         }
-        scheduleReturnToPreviousApp(1200)
+        scheduleReturnToPreviousApp(450)
     }
 
 
@@ -420,7 +444,8 @@ class OrderMonitorService : AccessibilityService() {
 
         refreshAllowedApps()
 
-        val targetPackage = lastNonDeliveryApp ?: return
+        val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
+        val targetPackage = prefs.getString("LAST_FOREGROUND_APP", null) ?: return
 
         if (!allowedReturnApps.contains(targetPackage)) {
             Log.d("OrderGuard", "App not in allowed list")

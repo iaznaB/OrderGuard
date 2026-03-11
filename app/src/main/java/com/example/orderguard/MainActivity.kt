@@ -1,5 +1,7 @@
 package com.example.orderguard
 
+
+import android.net.Uri
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.DatePickerDialog
 import android.content.Context
@@ -122,6 +124,20 @@ class MainActivity : ComponentActivity() {
 
         var isMonitoringEnabled by remember { mutableStateOf(filterPrefs.getBoolean("IS_MONITORING", false)) }
         var isServiceRunning by remember { mutableStateOf(isAccessibilityServiceEnabled(context)) }
+
+        DisposableEffect(Unit) {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+                if (key == "IS_MONITORING") {
+                    isMonitoringEnabled = prefs.getBoolean("IS_MONITORING", false)
+                }
+            }
+
+            filterPrefs.registerOnSharedPreferenceChangeListener(listener)
+
+            onDispose {
+                filterPrefs.unregisterOnSharedPreferenceChangeListener(listener)
+            }
+        }
         
         var sheetOrders by remember { mutableStateOf<List<Map<String, String>>>(emptyList()) }
         val scope = rememberCoroutineScope()
@@ -176,19 +192,44 @@ class MainActivity : ComponentActivity() {
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // START / STOP Button
+                // START / STOP Button
                 Button(
                     onClick = {
+
+                        val activity = context as MainActivity
+
+                        if (!Settings.canDrawOverlays(activity)) {
+                            val intent = Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${activity.packageName}")
+                            )
+                            activity.startActivity(intent)
+                            return@Button
+                        }
+
                         isMonitoringEnabled = !isMonitoringEnabled
-                        filterPrefs.edit { putBoolean("IS_MONITORING", isMonitoringEnabled) }
-                        
+
+// Persist in background
+                        filterPrefs.edit()
+                            .putBoolean("IS_MONITORING", isMonitoringEnabled)
+                            .apply()
+
+                        if (isMonitoringEnabled) {
+                            activity.startService(Intent(activity, FloatingWidgetService::class.java))
+                        } else {
+                            activity.stopService(Intent(activity, FloatingWidgetService::class.java))
+                        }
+
                         val status = if (isMonitoringEnabled) "Started" else "Stopped"
                         Toast.makeText(context, "Monitoring $status", Toast.LENGTH_SHORT).show()
-                        
+
                         if (isMonitoringEnabled && !isServiceRunning) {
                             Toast.makeText(context, "Accessibility Service is OFF!", Toast.LENGTH_LONG).show()
                         }
                     },
-                    modifier = Modifier.fillMaxWidth().height(60.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(60.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (isMonitoringEnabled) Color(0xFFD32F2F) else Color(0xFF388E3C)
                     ),

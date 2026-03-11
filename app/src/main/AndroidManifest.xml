@@ -67,6 +67,8 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_TYPE"
                 android:value="This service monitors delivery app screens to provide hands-free safety filtering for gig workers." />
         </service>
-
+        <service
+            android:name=".FloatingWidgetService"
+            android:exported="false"/>
     </application>
 </manifest>
