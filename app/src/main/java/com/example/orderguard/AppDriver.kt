@@ -4,7 +4,11 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 interface AppDriver {
 
-    fun findValues(root: AccessibilityNodeInfo, data: MutableMap<String, Double>)
+    fun findValues(
+        root: AccessibilityNodeInfo,
+        data: MutableMap<String, Double>,
+        textData: MutableMap<String, String>
+    )
 
     fun executeDecline(
         service: OrderMonitorService,

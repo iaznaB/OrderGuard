@@ -6,19 +6,64 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 
-object GrubhubDriver {
+class GrubhubDriver : AppDriver {
 
-    private const val TAG = "OrderGuard"
+    private val TAG = "OrderGuard"
 
     /*
     Extract price + miles
     */
-    fun findValues(root: AccessibilityNodeInfo, data: MutableMap<String, Double>) {
+    override fun findValues(
+        root: AccessibilityNodeInfo,
+        data: MutableMap<String, Double>,
+        textData: MutableMap<String, String>
+    ) {
 
         val textList = mutableListOf<String>()
         collectText(root, textList)
 
         val joined = textList.joinToString(" ")
+
+        // --- Address detection for Grubhub ---
+
+        var pickupAddress: String? = null
+        val dropoffs = mutableListOf<String>()
+
+        for (i in textList.indices) {
+
+            val text = textList[i]
+
+            if (text.contains("Pickup by", ignoreCase = true)) {
+
+                if (i > 0) {
+                    pickupAddress = textList[i - 1]
+                }
+
+            }
+
+            if (text.contains("Dropoff by", ignoreCase = true)) {
+
+                if (i > 0) {
+                    dropoffs.add(textList[i - 1])
+                }
+
+            }
+        }
+
+        pickupAddress?.let {
+            textData["pickupAddress"] = it
+            Log.d(TAG, "Grubhub pickup detected: $it")
+        }
+
+        if (dropoffs.isNotEmpty()) {
+            textData["dropoffA"] = dropoffs[0]
+            Log.d(TAG, "Grubhub dropoff A: ${dropoffs[0]}")
+        }
+
+        if (dropoffs.size > 1) {
+            textData["dropoffB"] = dropoffs[1]
+            Log.d(TAG, "Grubhub dropoff B: ${dropoffs[1]}")
+        }
 
         val priceRegex = Regex("""\$(\d+(?:\.\d+)?)""")
         val mileRegex = Regex("""(\d+(?:\.\d+)?)\s*mi""")
@@ -38,7 +83,12 @@ object GrubhubDriver {
     /*
     Decline sequence
     */
-    fun executeDecline(service: AccessibilityService, root: AccessibilityNodeInfo) {
+    override fun executeDecline(
+        service: OrderMonitorService,
+        root: AccessibilityNodeInfo
+    ) {
+
+        scrollOffer(root)
 
         Handler(Looper.getMainLooper()).postDelayed({
 
@@ -54,7 +104,7 @@ object GrubhubDriver {
                     rejectButton.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 }
 
-                (service as OrderMonitorService).scheduleReturnToPreviousApp(500)
+                service.scheduleReturnToPreviousApp(500)
 
                 Log.d(TAG, "Grubhub Reject clicked")
 
@@ -78,6 +128,26 @@ object GrubhubDriver {
         for (i in 0 until node.childCount) {
             collectText(node.getChild(i), list)
         }
+    }
+
+    private fun scrollOffer(node: AccessibilityNodeInfo?): Boolean {
+
+        if (node == null) return false
+
+        if (node.isScrollable) {
+
+            Log.d(TAG, "Scrolling Grubhub offer card")
+
+            node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+
+            return true
+        }
+
+        for (i in 0 until node.childCount) {
+            if (scrollOffer(node.getChild(i))) return true
+        }
+
+        return false
     }
 
     /*

@@ -7,18 +7,34 @@ import java.util.regex.Pattern
 
 class UberDriver : AppDriver {
 
+    private var nodesAfterMiles = 0
+
     private var uberDeclineRect: Rect? = null
+
+    private var foundTimeMilesRow = false
+    private var captureBusinessNext = false
+    private var captureAddressNext = false
 
     override fun findValues(
         root: AccessibilityNodeInfo,
-        data: MutableMap<String, Double>
+        data: MutableMap<String, Double>,
+        textData: MutableMap<String, String>
     ) {
-        scan(root, data)
+
+        foundTimeMilesRow = false
+        captureBusinessNext = false
+        captureAddressNext = false
+        nodesAfterMiles = 0
+        captureBusinessNext = false
+        captureAddressNext = false
+        scan(root, data, textData)
     }
 
     private fun scan(
         node: AccessibilityNodeInfo?,
-        data: MutableMap<String, Double>
+        data: MutableMap<String, Double>,
+        textData: MutableMap<String, String>
+
     ) {
 
         if (node == null) return
@@ -26,6 +42,13 @@ class UberDriver : AppDriver {
         val text = node.text?.toString() ?: ""
         val desc = node.contentDescription?.toString() ?: ""
         val combined = "$text $desc"
+
+        val timeMatcher =
+            Pattern.compile("(\\d+)\\s*min").matcher(combined)
+        if (timeMatcher.find()) {
+
+            textData["estTime"] = timeMatcher.group(1) ?: ""
+        }
 
         if (combined.contains("$")) {
 
@@ -48,6 +71,35 @@ class UberDriver : AppDriver {
 
             data["miles"] =
                 milesMatcher.group(1)?.toDoubleOrNull() ?: 0.0
+
+            foundTimeMilesRow = true
+            nodesAfterMiles = 0
+
+            return
+        }
+
+        // capture business and address AFTER time+miles row
+        if (node.className == "android.widget.TextView" && text.isNotEmpty()) {
+
+            if (foundTimeMilesRow && node.className == "android.widget.TextView" && text.isNotEmpty()) {
+
+                nodesAfterMiles++
+
+                if (nodesAfterMiles == 1) {
+
+                    textData["businessName"] = text
+                    Log.d("OrderGuard", "Uber business: $text")
+
+                }
+
+                else if (nodesAfterMiles == 2) {
+
+                    textData["dropoffAddress"] = text
+                    Log.d("OrderGuard", "Uber dropoff: $text")
+
+                    foundTimeMilesRow = false
+                }
+            }
         }
 
         if (node.className == "android.widget.Button" && node.text == null) {
@@ -66,9 +118,12 @@ class UberDriver : AppDriver {
             }
         }
 
+
+
         for (i in 0 until node.childCount) {
-            scan(node.getChild(i), data)
+            scan(node.getChild(i), data, textData)
         }
+
     }
 
     override fun executeDecline(

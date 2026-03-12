@@ -215,9 +215,17 @@ class MainActivity : ComponentActivity() {
                             .apply()
 
                         if (isMonitoringEnabled) {
+
                             activity.startService(Intent(activity, FloatingWidgetService::class.java))
+
+                            // Reset order detection so the first order is processed correctly
+                            val intent = Intent("ORDERGUARD_RESET_STATE")
+                            activity.sendBroadcast(intent)
+
                         } else {
+
                             activity.stopService(Intent(activity, FloatingWidgetService::class.java))
+
                         }
 
                         val status = if (isMonitoringEnabled) "Started" else "Stopped"

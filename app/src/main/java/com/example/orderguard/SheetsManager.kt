@@ -57,7 +57,21 @@ class SheetsManager(private val context: Context) {
 
                 // Add headers
                 val values = listOf(
-                    listOf("Date", "Time", "App", "Price ($)", "Miles", "Status")
+                    listOf(
+                        "Date",
+                        "Time",
+                        "App",
+                        "Price ($)",
+                        "Miles",
+                        "Avg $/M",
+                        "Status",
+                        "Business Name",
+                        "Pick-up Address",
+                        "Drop-off Address",
+                        "Est. Time",
+                        "Actual Time",
+                        "Actual Miles"
+                    )
                 )
 
                 val body = ValueRange().setValues(values)
@@ -80,7 +94,13 @@ class SheetsManager(private val context: Context) {
         appName: String,
         price: Double,
         miles: Double,
-        status: String
+        status: String,
+        businessName: String = "",
+        pickupAddress: String = "",
+        dropoffAddress: String = "",
+        estTime: String = "",
+        actualTime: String = "",
+        actualMiles: String = ""
     ) {
         Thread {
             try {
@@ -111,7 +131,7 @@ class SheetsManager(private val context: Context) {
                 if (status.uppercase() != "DETECTED") {
 
                     val existing = sheetsService.spreadsheets().values()
-                        .get(spreadsheetId, "Sheet1!A2:F")
+                        .get(spreadsheetId, "Sheet1!A2:M")
                         .execute()
 
                     val rows = existing.getValues() ?: emptyList()
@@ -125,7 +145,7 @@ class SheetsManager(private val context: Context) {
                         val rDate = row[0].toString()
                         val rTime = row[1].toString()
                         val rApp = row[2].toString()
-                        val rStatus = row[5].toString()
+                        val rStatus = row.getOrNull(6)?.toString() ?: ""
 
                         if (
                             rDate == date &&
@@ -156,6 +176,9 @@ class SheetsManager(private val context: Context) {
                             .batchUpdate(spreadsheetId, batch)
                             .execute()
                     }
+                    val avgPerMile =
+                        if (miles > 0) String.format(Locale.US, "%.2f", price / miles) else ""
+
                     val values = listOf(
                         listOf(
                             date,
@@ -163,14 +186,21 @@ class SheetsManager(private val context: Context) {
                             appName,
                             price.toString(),
                             miles.toString(),
-                            status
+                            avgPerMile,
+                            status,
+                            businessName,
+                            pickupAddress,
+                            dropoffAddress,
+                            estTime,
+                            actualTime,
+                            actualMiles
                         )
                     )
 
                     val body = ValueRange().setValues(values)
 
                     sheetsService.spreadsheets().values()
-                        .append(spreadsheetId, "Sheet1!A:F", body)
+                        .append(spreadsheetId, "Sheet1!A:M", body)
                         .setValueInputOption("RAW")
                         .setInsertDataOption("INSERT_ROWS")
                         .execute()
@@ -215,7 +245,7 @@ class SheetsManager(private val context: Context) {
                 .build()
 
             val response = sheetsService.spreadsheets().values()
-                .get(spreadsheetId, "Sheet1!A2:F")
+                .get(spreadsheetId, "Sheet1!A2:M")
                 .execute()
 
             val rows = response.getValues() ?: return emptyList()
@@ -228,12 +258,19 @@ class SheetsManager(private val context: Context) {
                 if (row[0] == date) {
                     results.add(
                         mapOf(
-                            "Date" to row[0].toString(),
-                            "Time" to row[1].toString(),
-                            "App" to row[2].toString(),
-                            "Price ($)" to row[3].toString(),
-                            "Miles" to row[4].toString(),
-                            "Status" to row[5].toString()
+                            "Date" to row.getOrNull(0).toString(),
+                            "Time" to row.getOrNull(1).toString(),
+                            "App" to row.getOrNull(2).toString(),
+                            "Price ($)" to row.getOrNull(3).toString(),
+                            "Miles" to row.getOrNull(4).toString(),
+                            "Avg $/M" to row.getOrNull(5).toString(),
+                            "Status" to row.getOrNull(6).toString(),
+                            "Business Name" to row.getOrNull(7).toString(),
+                            "Pick-up Address" to row.getOrNull(8).toString(),
+                            "Drop-off Address" to row.getOrNull(9).toString(),
+                            "Est. Time" to row.getOrNull(10).toString(),
+                            "Actual Time" to row.getOrNull(11).toString(),
+                            "Actual Miles" to row.getOrNull(12).toString()
                         )
                     )
                 }

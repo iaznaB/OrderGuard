@@ -8,18 +8,23 @@ import java.util.regex.Pattern
 
 class DoorDashDriver : AppDriver {
 
+    private var captureBusinessNext = false
     override fun findValues(
         root: AccessibilityNodeInfo,
-        data: MutableMap<String, Double>
-    ) {
+        data: MutableMap<String, Double>,
+        textData: MutableMap<String, String>
+    ){
 
-        scan(root, data)
+        captureBusinessNext = false
+
+        scan(root, data, textData)
 
     }
 
     private fun scan(
         node: AccessibilityNodeInfo?,
-        data: MutableMap<String, Double>
+        data: MutableMap<String, Double>,
+        textData: MutableMap<String, String>
     ) {
 
         if (node == null) return
@@ -50,8 +55,25 @@ class DoorDashDriver : AppDriver {
             }
         }
 
+        if (text.equals("Pickup", ignoreCase = true)) {
+            captureBusinessNext = true
+        }
+
+        if (captureBusinessNext &&
+            node.className == "android.widget.TextView" &&
+            text.isNotBlank() &&
+            !text.equals("Pickup", true)
+        ) {
+
+            textData["businessName"] = text
+
+            Log.d("OrderGuard", "DoorDash business detected: $text")
+
+            captureBusinessNext = false
+        }
+
         for (i in 0 until node.childCount) {
-            scan(node.getChild(i), data)
+            scan(node.getChild(i), data, textData)
         }
     }
 

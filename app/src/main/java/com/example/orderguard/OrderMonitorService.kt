@@ -32,6 +32,11 @@ import java.util.regex.Pattern
 
 class OrderMonitorService : AccessibilityService() {
 
+    private val resetReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            resetOrderDetectionState()
+        }
+    }
     private fun refreshAllowedApps() {
         val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
         allowedReturnApps =
@@ -54,7 +59,7 @@ class OrderMonitorService : AccessibilityService() {
     private val uberDriver = UberDriver()
     private val doorDashDriver = DoorDashDriver()
 
-    private val grubhubDriver = GrubhubDriver
+    private val grubhubDriver = GrubhubDriver()
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     private lateinit var sheetsManager: SheetsManager
@@ -68,7 +73,13 @@ class OrderMonitorService : AccessibilityService() {
         }
     }
 
-    private fun logOrder(packageName: String, price: Double, miles: Double, action: String) {
+    private fun logOrder(
+        packageName: String,
+        price: Double,
+        miles: Double,
+        action: String,
+        textData: Map<String, String> = emptyMap()
+    ) {
         if (price <= 0.0) return
         val historyPrefs = getSharedPreferences("OrderHistory", MODE_PRIVATE)
         val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
@@ -98,7 +109,13 @@ class OrderMonitorService : AccessibilityService() {
                     appName = getAppName(packageName),
                     price = price,
                     miles = miles,
-                    status = action.uppercase()
+                    status = action.uppercase(),
+                    businessName = textData["businessName"] ?: "",
+                    pickupAddress = textData["pickupAddress"] ?: "",
+                    dropoffAddress = textData["dropoffAddress"] ?: "",
+                    estTime = textData["estTime"] ?: "",
+                    actualTime = textData["actualTime"] ?: "",
+                    actualMiles = textData["actualMiles"] ?: ""
                 )
             }
         }
@@ -157,6 +174,8 @@ class OrderMonitorService : AccessibilityService() {
         allowedReturnApps =
             prefs.getStringSet("ALLOWED_RETURN_APPS", emptySet()) ?: emptySet()
         Log.d("OrderGuardDebug", "Accessibility Service Connected")
+
+        registerReceiver(resetReceiver, IntentFilter("ORDERGUARD_RESET_STATE"))
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
@@ -216,7 +235,8 @@ class OrderMonitorService : AccessibilityService() {
             val root = rootInActiveWindow ?: return
 
             val data = mutableMapOf<String, Double>()
-            doorDashDriver.findValues(root, data)
+            val textData = mutableMapOf<String, String>()
+            doorDashDriver.findValues(root, data, textData)
 
             val price = data["price"] ?: 0.0
             val miles = data["miles"] ?: 0.0
@@ -250,16 +270,17 @@ class OrderMonitorService : AccessibilityService() {
         val rootNode = rootInActiveWindow ?: return
 
         val data = mutableMapOf<String, Double>()
+        val textData = mutableMapOf<String, String>()
         when (packageName) {
 
-            "com.ubercab.driver" ->
-                uberDriver.findValues(rootNode, data)
-
             "com.doordash.driverapp" ->
-                doorDashDriver.findValues(rootNode, data)
+                doorDashDriver.findValues(rootNode, data, textData)
+
+            "com.ubercab.driver" ->
+                uberDriver.findValues(rootNode, data, textData)
 
             "com.grubhub.driver" ->
-                grubhubDriver.findValues(rootNode, data)
+                grubhubDriver.findValues(rootNode, data, textData)
 
         }
 
@@ -272,7 +293,7 @@ class OrderMonitorService : AccessibilityService() {
                 pendingMiles = miles
 
                 updateFinancials(packageName, price, miles, false)
-                logOrder(packageName, price, miles, "Detected")
+                logOrder(packageName, price, miles, "Detected", textData)
 
                 val minRatio = filterPrefs.getFloat("MIN_RATIO", 2.0f).toDouble()
                 val minPay = filterPrefs.getFloat("MIN_PAY", 5.0f).toDouble()
@@ -282,7 +303,7 @@ class OrderMonitorService : AccessibilityService() {
                     if (currentTime - lastActionTime > 3000) {
                         lastActionTime = currentTime
                         updateStats(packageName, "declined")
-                        logOrder(packageName, price, miles, "Declined")
+                        logOrder(packageName, price, miles, "Declined", textData)
                         executeDeclineSequence(rootNode, packageName)
                     }
                 }
@@ -388,12 +409,24 @@ class OrderMonitorService : AccessibilityService() {
         }
     }
 
+
     override fun onDestroy() {
         super.onDestroy()
         serviceJob.cancel()
+        try {
+            unregisterReceiver(resetReceiver)
+        } catch (_: Exception) {}
+
     }
 
     override fun onInterrupt() {}
+
+    fun resetOrderDetectionState() {
+        pendingPrice = 0.0
+        pendingMiles = 0.0
+        lastActionTime = 0
+        Log.d("OrderGuard", "Order detection state reset after resume")
+    }
 
     private fun switchBackToPreviousApp() {
 
