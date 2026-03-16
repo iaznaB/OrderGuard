@@ -86,10 +86,18 @@ class UberDriver : AppDriver {
                 nodesAfterMiles++
 
                 if (nodesAfterMiles == 1) {
+                    // Logic to split "Business Name (123 Main St)"
+                    if (text.contains("(") && text.contains(")")) {
+                        val name = text.substringBefore("(").trim()
+                        val address = text.substringAfter("(").substringBefore(")").trim()
 
-                    textData["businessName"] = text
-                    Log.d("OrderGuard", "Uber business: $text")
-
+                        textData["businessName"] = name
+                        textData["pickupAddress"] = address
+                        Log.d("OrderGuard", "Uber split: Name=$name, Pickup=$address")
+                    } else {
+                        textData["businessName"] = text
+                        Log.d("OrderGuard", "Uber business: $text")
+                    }
                 }
 
                 else if (nodesAfterMiles == 2) {
@@ -130,15 +138,15 @@ class UberDriver : AppDriver {
         service: OrderMonitorService,
         root: AccessibilityNodeInfo
     ) {
-
         val target = uberDeclineRect ?: return
-
         val x = target.centerX().toFloat()
         val y = target.centerY().toFloat()
 
-        Log.d("OrderGuard", "Clicking Uber X at $x , $y")
-
         service.clickAt(x, y)
+
+        // Drop from 250ms to 50ms.
+        // We want the 'Return' intent to hit the system while the 'Click' is still processing.
+        service.scheduleReturnToPreviousApp(50)
 
         uberDeclineRect = null
     }

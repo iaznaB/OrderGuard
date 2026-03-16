@@ -81,60 +81,23 @@ class DoorDashDriver : AppDriver {
         service: OrderMonitorService,
         root: AccessibilityNodeInfo
     ) {
-
-        Log.d("OrderGuard", "DoorDash decline step 1")
-
-        val declineNodes =
-            root.findAccessibilityNodeInfosByText("Decline")
-
+        val declineNodes = root.findAccessibilityNodeInfosByText("Decline")
         for (node in declineNodes) {
-
-            var clickable: AccessibilityNodeInfo? = node
-
-            while (clickable != null && !clickable.isClickable) {
-                clickable = clickable.parent
-            }
-
-            if (clickable != null) {
-
-                if (service.tryClick(clickable)) {
-
-                    Handler(Looper.getMainLooper()).postDelayed({
-
-                        val newRoot =
-                            service.rootInActiveWindow ?: return@postDelayed
-
-                        val confirmNodes =
-                            newRoot.findAccessibilityNodeInfosByText("Decline offer")
-
-                        for (confirm in confirmNodes) {
-
-                            var c: AccessibilityNodeInfo? = confirm
-
-                            while (c != null && !c.isClickable) {
-                                c = c.parent
-                            }
-
-                            if (c != null) {
-
-                                if (service.tryClick(c)) {
-
-                                    Log.d("OrderGuard", "DoorDash confirmed decline")
-
-                                    service.scheduleReturnToPreviousApp(500)
-
-                                    return@postDelayed
-                                }
-                            }
+            if (service.tryClick(node)) {
+                Handler(Looper.getMainLooper()).postDelayed({
+                    val newRoot = service.rootInActiveWindow ?: return@postDelayed
+                    val confirmNodes = newRoot.findAccessibilityNodeInfosByText("Decline offer")
+                    for (confirm in confirmNodes) {
+                        if (service.tryClick(confirm)) {
+                            Log.d("OrderGuard", "DoorDash: Decline confirmed")
+                            // DoorDash needs a moment to clear the overlay
+                            service.scheduleReturnToPreviousApp(500)
+                            return@postDelayed
                         }
-
-                    }, 250)
-
-                    return
-                }
+                    }
+                }, 300)
+                return
             }
         }
-
-        Log.d("OrderGuard", "DoorDash decline button not found")
     }
 }

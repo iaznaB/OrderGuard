@@ -3,6 +3,9 @@
 
 package com.example.orderguard
 
+
+import android.app.ActivityOptions
+import android.app.PendingIntent
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
@@ -122,6 +125,42 @@ class OrderMonitorService : AccessibilityService() {
 
     }
 
+    // Used by Grubhub after it has scrolled and re-read the screen so that
+    // the Declined entry in Sheets can include business/address details.
+    fun logGrubhubDeclineWithDetails(textData: Map<String, String>) {
+        if (pendingPrice <= 0.0 || pendingMiles <= 0.0) return
+        logOrder(
+            packageName = "com.grubhub.driver",
+            price = pendingPrice,
+            miles = pendingMiles,
+            action = "Declined",
+            textData = textData
+        )
+    }
+    private fun triggerFakeFlash() {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val flashView = View(this).apply {
+            setBackgroundColor(Color.WHITE)
+            alpha = 0.8f // Slightly transparent for a cleaner look
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        )
+
+        try {
+            wm.addView(flashView, params)
+            // Remove it after 50ms (the speed of a camera shutter)
+            Handler(Looper.getMainLooper()).postDelayed({
+                try { wm.removeView(flashView) } catch (_: Exception) {}
+            }, 50)
+        } catch (e: Exception) { Log.e("OrderGuard", "Flash error: ${e.message}") }
+    }
+
     private fun showVisualClick(x: Float, y: Float) {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val dot = View(this).apply {
@@ -180,6 +219,8 @@ class OrderMonitorService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
 
+        val rootNode = rootInActiveWindow ?: return
+
         val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
 
         if (!prefs.getBoolean("IS_MONITORING", false)) {
@@ -188,22 +229,22 @@ class OrderMonitorService : AccessibilityService() {
         val packageName = event.packageName?.toString() ?: ""
 
         // Track last foreground app
+        // Track last foreground app
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
 
-            if (packageName == "com.android.systemui") return
+            // 1. Ignore system UI and delivery apps
+            if (packageName == "com.android.systemui" ||
+                deliveryApps.contains(packageName) ||
+                packageName == "com.example.orderguard") return
 
-            if (
-                packageName.contains("doordash") ||
-                packageName.contains("uber") ||
-                packageName.contains("grubhub")
-            ) return
-
-            lastForegroundApp = packageName
-
-            val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
-            prefs.edit().putString("LAST_FOREGROUND_APP", packageName).apply()
-
-            Log.d("OrderGuard", "Foreground app saved: $packageName")
+            // 2. ONLY save the app if it is in your "Allowed" list
+            // This ensures LAST_FOREGROUND_APP always points to a valid return target
+            if (allowedReturnApps.contains(packageName)) {
+                lastForegroundApp = packageName
+                val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
+                prefs.edit().putString("LAST_FOREGROUND_APP", packageName).apply()
+                Log.d("OrderGuard", "Valid return app saved: $packageName")
+            }
         }
 
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
@@ -228,46 +269,50 @@ class OrderMonitorService : AccessibilityService() {
             Log.d("OrderGuard", "Return app set to: $lastNonDeliveryApp")
         }
 
-        // DoorDash reacts immediately when the offer view appears
+                // DoorDash reacts immediately when the offer view appears
         if (packageName == "com.doordash.driverapp" &&
             event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
 
-            val root = rootInActiveWindow ?: return
+            val rootNodeForDD = rootInActiveWindow ?: return
 
             val data = mutableMapOf<String, Double>()
             val textData = mutableMapOf<String, String>()
-            doorDashDriver.findValues(root, data, textData)
+            doorDashDriver.findValues(rootNodeForDD, data, textData)
 
             val price = data["price"] ?: 0.0
             val miles = data["miles"] ?: 0.0
 
             if (price > 0.0 && miles > 0.0) {
                 if (price != pendingPrice || miles != pendingMiles) {
-
                     pendingPrice = price
                     pendingMiles = miles
 
                     val filterPrefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
-
                     val minRatio = filterPrefs.getFloat("MIN_RATIO", 2.0f).toDouble()
                     val minPay = filterPrefs.getFloat("MIN_PAY", 5.0f).toDouble()
 
                     if ((price / miles) < minRatio || price < minPay) {
-
                         val currentTime = System.currentTimeMillis()
-
-                        if (currentTime - lastActionTime > 2000) {
+                        if (currentTime - lastActionTime > 3000) {
                             lastActionTime = currentTime
-                            executeDeclineSequence(root, packageName)
+                            updateStats(packageName, "declined")
+
+                            // --- FIX IS HERE ---
+                            // Only log immediately for Uber and DoorDash.
+                            // Grubhub is skipped here because it logs itself after the scroll.
+                            if (packageName != "com.grubhub.driver") {
+                                logOrder(packageName, price, miles, "Declined", textData)
+                            }
+
+                            executeDeclineSequence(rootNode, packageName)
                         }
                     }
                 }
             }
-
             return
         }
 
-        val rootNode = rootInActiveWindow ?: return
+
 
         val data = mutableMapOf<String, Double>()
         val textData = mutableMapOf<String, String>()
@@ -293,7 +338,11 @@ class OrderMonitorService : AccessibilityService() {
                 pendingMiles = miles
 
                 updateFinancials(packageName, price, miles, false)
-                logOrder(packageName, price, miles, "Detected", textData)
+
+                // FIX 1: Don't log "Detected" for Grubhub (Driver will log everything later)
+                if (packageName != "com.grubhub.driver") {
+                    logOrder(packageName, price, miles, "Detected", textData)
+                }
 
                 val minRatio = filterPrefs.getFloat("MIN_RATIO", 2.0f).toDouble()
                 val minPay = filterPrefs.getFloat("MIN_PAY", 5.0f).toDouble()
@@ -303,7 +352,12 @@ class OrderMonitorService : AccessibilityService() {
                     if (currentTime - lastActionTime > 3000) {
                         lastActionTime = currentTime
                         updateStats(packageName, "declined")
-                        logOrder(packageName, price, miles, "Declined", textData)
+
+                        // FIX 2: Don't log "Declined" here for Grubhub
+                        if (packageName != "com.grubhub.driver") {
+                            logOrder(packageName, price, miles, "Declined", textData)
+                        }
+
                         executeDeclineSequence(rootNode, packageName)
                     }
                 }
@@ -326,19 +380,13 @@ class OrderMonitorService : AccessibilityService() {
         rootNode: AccessibilityNodeInfo,
         packageName: String
     ) {
-
+        // We no longer handle timers or scheduleReturn here.
+        // Each driver handles its own workflow and return trigger.
         when (packageName) {
-
-            "com.ubercab.driver" ->
-                uberDriver.executeDecline(this, rootNode)
-
-            "com.doordash.driverapp" ->
-                doorDashDriver.executeDecline(this, rootNode)
-
-            "com.grubhub.driver" ->
-                grubhubDriver.executeDecline(this, rootNode)
+            "com.ubercab.driver" -> uberDriver.executeDecline(this, rootNode)
+            "com.doordash.driverapp" -> doorDashDriver.executeDecline(this, rootNode)
+            "com.grubhub.driver" -> grubhubDriver.executeDecline(this, rootNode)
         }
-        scheduleReturnToPreviousApp(450)
     }
 
 
@@ -355,6 +403,37 @@ class OrderMonitorService : AccessibilityService() {
         dispatchGesture(gesture, null, null)
 
         showVisualClick(x, y)
+    }
+
+    // REPLACE the existing swipeScreenDown with this:
+    fun swipeScreenDown(onComplete: () -> Unit) {
+        val metrics = resources.displayMetrics
+        val width = metrics.widthPixels.toFloat()
+        val height = metrics.heightPixels.toFloat()
+
+        // Swipe from 80% height to 20% height (flicking UP to scroll DOWN)
+        val startX = width / 2f
+        val startY = height * 0.8f
+        val endY = height * 0.2f
+
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(startX, endY)
+        }
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
+            .build()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                super.onCompleted(gestureDescription)
+                // Wait 300ms for the UI animation to stop moving
+                Handler(Looper.getMainLooper()).postDelayed({
+                    onComplete()
+                }, 300)
+            }
+        }, null)
     }
 
 
@@ -473,49 +552,55 @@ class OrderMonitorService : AccessibilityService() {
         }, delay)
     }
 
+    private fun punchHoleInThrottle() {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val view = View(this)
+        val params = WindowManager.LayoutParams(
+            1, 1, // 1x1 pixel (invisible)
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+
+        try {
+            wm.addView(view, params)
+            // Removing it immediately causes a focus change event in the OS
+            // which often clears the background activity block.
+            Handler(Looper.getMainLooper()).postDelayed({
+                try { wm.removeView(view) } catch (e: Exception) {}
+            }, 5)
+        } catch (e: Exception) {}
+    }
+
     private fun returnToPreviousAppSmart() {
-
-        refreshAllowedApps()
-
         val prefs = getSharedPreferences("OrderGuardPrefs", MODE_PRIVATE)
         val targetPackage = prefs.getString("LAST_FOREGROUND_APP", null) ?: return
 
-        if (!allowedReturnApps.contains(targetPackage)) {
-            Log.d("OrderGuard", "App not in allowed list")
-            return
-        }
-
         try {
+            // Use the focus punch instead of a screenshot to bypass the 3s delay
+            punchHoleInThrottle()
 
-            val intent = packageManager.getLaunchIntentForPackage(targetPackage)
-
-            if (intent != null) {
-
-                intent.addFlags(
+            val launchIntent = packageManager.getLaunchIntentForPackage(targetPackage)
+            if (launchIntent != null) {
+                launchIntent.addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                            Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                 )
 
-                startActivity(intent)
+                val options = ActivityOptions.makeBasic()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    options.setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                    )
+                }
 
-                Log.d("OrderGuard", "Returned to $targetPackage")
-
-            } else {
-
-                Log.e("OrderGuard", "Launch intent not found for $targetPackage")
+                // Fire immediately after the punch
+                startActivity(launchIntent, options.toBundle())
+                Log.d("OrderGuard", "High-speed return to $targetPackage executed.")
             }
-
         } catch (e: Exception) {
-
-            Log.e("OrderGuard", "Failed returning to app: ${e.message}")
-
-            // Fallback to carousel if intent fails
-            performGlobalAction(GLOBAL_ACTION_RECENTS)
-
-            Handler(Looper.getMainLooper()).postDelayed({
-                performGlobalAction(GLOBAL_ACTION_RECENTS)
-            }, 250)
+            Log.e("OrderGuard", "Instant switch failed: ${e.message}")
         }
     }
 }
